@@ -211,6 +211,18 @@ class ThermoJob:
             f.write(string)
             
             f.close()
+
+            from rmgpy.data.thermo import ThermoLibrary
+            library = ThermoLibrary(name='Thermo Estimation Library')
+            
+            library.loadEntry(
+                index = len(library.entries) + 1,
+                label = species.label,
+                molecule = species.molecule[0].toAdjacencyList(),
+                thermo = species.thermo.toThermoData(),
+                shortDesc = species.thermo.comment,
+            )
+            library.save(os.path.join(os.path.dirname(outputFile),'ThermoLibrary.py'))
     
 
     def plot(self, outputDirectory):
