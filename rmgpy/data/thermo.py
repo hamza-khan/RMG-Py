@@ -266,6 +266,23 @@ def averageThermoData(thermoDataList=[]):
             averagedThermoData.S298.uncertainty_si = 2*numpy.std(SData, ddof=1)
             return averagedThermoData
 
+def commonAtoms(cycle1, cycle2):
+    """
+    INPUT: two cycles with type: list of atoms
+    OUTPUT: a set of common atoms
+    """
+    set1 = set(cycle1)
+    set2 = set(cycle2)
+    return set1.intersection(set2)
+
+def combineCycles(cycle1, cycle2):
+    """
+    INPUT: two cycles with type: list of atoms
+    OUTPUT: a combined cycle with type: list of atoms
+    """
+    set1 = set(cycle1)
+    set2 = set(cycle2)
+    return list(set1.union(set2))
 ################################################################################
 
 class ThermoDepository(Database):
@@ -1191,7 +1208,7 @@ class ThermoDatabase(object):
                 # Make a temporary structure containing only the atoms in the ring
                 # NB. if any of the ring corrections depend on ligands not in the ring, they will not be found!
                 try:
-                    self.__addRingCorrectionThermoData(thermoData, self.groups['ring'], molecule, ring)
+                    self.__addRingCorrectionThermoDataFromTree(thermoData, self.groups['ring'], molecule, ring)
                 except KeyError:
                     logging.error("Couldn't find a match in the monocyclic ring database even though monocyclic rings were found.")
                     logging.error(molecule)
@@ -1201,7 +1218,7 @@ class ThermoDatabase(object):
                 # Make a temporary structure containing only the atoms in the ring
                 # NB. if any of the ring corrections depend on ligands not in the ring, they will not be found!
                 try:
-                    self.__addRingCorrectionThermoData(thermoData, self.groups['polycyclic'], molecule, ring)
+                    self.__addPolycyclicCorrectionThermoData(thermoData, molecule, ring)
                 except KeyError:
                     logging.error("Couldn't find a match in the polycyclic ring database even though polycyclic rings were found.")
                     logging.error(molecule)
@@ -1210,7 +1227,80 @@ class ThermoDatabase(object):
 
         return thermoData
 
-    def __addRingCorrectionThermoData(self, thermoData, ring_database, molecule, ring):
+    def __addPolycyclicCorrectionThermoData(self, thermoData, molecule, polyring):
+        """
+        INPUT: `polyring` as a list of `Atom` forming a polycyclic ring
+        OUTPUT: if the input `polyring` can be fully matched in polycyclic database, the correction
+        will be directly added to `thermoData`; otherwise, a heuristic approach will 
+        be applied.
+        """
+        # look up polycylic tree directly
+        matched_group_thermodata = self.__addRingCorrectionThermoDataFromTree(None, self.groups['polycyclic'], molecule, polyring)
+        matched_group_comment = matched_group_thermodata.comment
+        pattern = re.compile(ur'\(.*\)')
+        matched_group_name = re.search(pattern, matched_group_comment).group(0)[1:-1]
+        matched_group = self.groups['polycyclic'].entries[matched_group_name].item
+        
+        # if partial match (non-H atoms number same between 
+        # polycylic ring in molecule and match group)
+        # otherwise, apply heuristic algorithm
+        if len(polyring) == len(matched_group.atoms):
+            thermoData = addThermoData(thermoData, matched_group_thermodata, groupAdditivity=True)
+        else:
+            self.__addPolyRingCorrectionThermoDataFromHeuristic(thermoData, polyring)
+            
+
+    def __addPolyRingCorrectionThermoDataFromHeuristic(self, thermoData, polyring):
+        """
+        INPUT: `polyring` as a list of `Atom` forming a polycyclic ring, which can 
+        only be partially matched.
+        OUTPUT: `polyring` will be decomposed into a combination of 2-ring polycyclics
+        and each one will be looked up from polycyclic database. The heuristic formula 
+        is "polyring thermo correction = sum of correction of all 2-ring sub-polycyclics - 
+        overlapped single-ring correction"; the calculated polyring thermo correction 
+        will be finally added to input `thermoData`.
+        """
+        # add back removed atoms in polyring
+        polyring_hydronated = []
+        polyring_hydronated.extend(polyring)
+        for atom in polyring:
+            for atom1 in atom.bonds:
+                if atom1 not in polyring:
+                    polyring_hydronated.append(atom1)
+        
+        # pring decomposition
+        submol = Molecule(atoms=polyring_hydronated)
+        SSSR = submol.getSmallestSetOfSmallestRings()
+        two_ring_cores = []
+        ring_in_core_dict = {}
+        ring_num = len(SSSR)
+        for ring_idx in range(ring_num):
+            ring_in_core_dict[ring_idx] = 0
+
+        for i in range(ring_num):
+            for j in range(i+1,ring_num):
+                if commonAtoms(SSSR[i], SSSR[j]):
+                    two_ring_core = combineCycles(SSSR[i], SSSR[j])
+                    two_ring_cores.append(two_ring_core)
+                    ring_in_core_dict[i] += 1
+                    ring_in_core_dict[j] += 1
+        # loop over 2-ring cores
+        for two_ring_core in two_ring_cores:
+            submol = Molecule(atoms=two_ring_core)
+            self.__addRingCorrectionThermoDataFromTree(thermoData, self.groups['polycyclic'], submol, two_ring_core)
+        # loop over 1-ring 
+        for one_ring in SSSR:
+            one_ring_idx = SSSR.index(one_ring)
+            occurances = ring_in_core_dict[one_ring_idx]
+
+            if occurances >= 2:
+                submol = Molecule(atoms=one_ring)
+                one_ring_thermodata = self.__addRingCorrectionThermoDataFromTree(None, self.groups['ring'], submol, two_ring_core)
+
+            for _ in range(occurances-1):
+                thermoData = removeThermoData(thermoData, one_ring_thermodata, True)
+
+    def __addRingCorrectionThermoDataFromTree(self, thermoData, ring_database, molecule, ring):
         """
         Determine the ring correction group additivity thermodynamic data for the given
          `ring` in the `molecule`, and add it to the existing thermo data
