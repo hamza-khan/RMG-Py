@@ -1214,11 +1214,11 @@ class ThermoDatabase(object):
                     logging.error(molecule)
                     logging.error(molecule.toAdjacencyList())
                     raise
-            for ring in polyrings:
+            for polyring in polyrings:
                 # Make a temporary structure containing only the atoms in the ring
                 # NB. if any of the ring corrections depend on ligands not in the ring, they will not be found!
                 try:
-                    self.__addPolycyclicCorrectionThermoData(thermoData, molecule, ring)
+                    self.__addPolycyclicCorrectionThermoData(thermoData, molecule, polyring)
                 except KeyError:
                     logging.error("Couldn't find a match in the polycyclic ring database even though polycyclic rings were found.")
                     logging.error(molecule)
