@@ -1310,18 +1310,12 @@ class ThermoDatabase(object):
         overlapped single-ring correction"; the calculated polyring thermo correction 
         will be finally added to input `thermoData`.
         """
-        # add back removed atoms in polyring
-        polyring_hydronated = []
-        polyring_hydronated.extend(polyring)
-        for atom in polyring:
-            for atom1 in atom.bonds:
-                if atom1 not in polyring:
-                    polyring_hydronated.append(atom1)
         
         # pring decomposition
-        submol = Molecule(atoms=polyring_hydronated)
+        submol = convertCycleToSubMolecule(polyring)
         SSSR = submol.getSmallestSetOfSmallestRings()
         two_ring_cores = []
+        two_ring_core_dict = {}
         ring_in_core_dict = {}
         ring_num = len(SSSR)
         for ring_idx in range(ring_num):
@@ -1330,10 +1324,44 @@ class ThermoDatabase(object):
         for i in range(ring_num):
             for j in range(i+1,ring_num):
                 if commonAtoms(SSSR[i], SSSR[j]):
-                    two_ring_core = combineCycles(SSSR[i], SSSR[j])
+                    submol0 = convertCycleToSubMolecule(polyring)
+                    SSSR0 = submol0.getSmallestSetOfSmallestRings()
+                    two_ring_core = combineCycles(SSSR0[i], SSSR0[j])
+                    two_ring_core_dict[(tuple(SSSR0[i]), tuple(SSSR0[j]))] = two_ring_core
+                    
                     two_ring_cores.append(two_ring_core)
                     ring_in_core_dict[i] += 1
                     ring_in_core_dict[j] += 1
+        # pre-process 2-ring coress
+        for key_tup in two_ring_core_dict:
+            ringA = list(key_tup[0])
+            ringB = list(key_tup[1])
+            isA_aromatic = isAromaticRing(ringA)
+            isB_aromatic = isAromaticRing(ringB)
+            submolA = Molecule(atoms=ringA)
+            submolB = Molecule(atoms=ringB)
+            # if ringA and ringB are both aromatic or not aromatic
+            # don't need to do anything extra
+            if (isA_aromatic and isB_aromatic):
+                pass
+            elif (not isA_aromatic and not isB_aromatic):
+                aromaticBonds_inA = findAromaticBonds(submolA)
+                for aromaticBond_inA in aromaticBonds_inA:
+                    aromaticBond_inA.order = 'S'
+
+                aromaticBonds_inB = findAromaticBonds(submolB)
+                for aromaticBond_inB in aromaticBonds_inB:
+                    aromaticBond_inB.order = 'S'
+            elif isA_aromatic:
+                aromaticBonds_inB = findAromaticBonds(submolB)
+                for aromaticBond_inB in aromaticBonds_inB:
+                    if not submolA.hasBond(aromaticBond_inB.atom1, aromaticBond_inB.atom2):
+                        aromaticBond_inB.order = 'S'
+            else:
+                aromaticBonds_inA = findAromaticBonds(submolA)
+                for aromaticBond_inA in aromaticBonds_inA:
+                    if not submolB.hasBond(aromaticBond_inA.atom1, aromaticBond_inA.atom2):
+                        aromaticBond_inA.order = 'S'
         # loop over 2-ring cores
         for two_ring_core in two_ring_cores:
             submol = Molecule(atoms=two_ring_core)
@@ -1345,8 +1373,22 @@ class ThermoDatabase(object):
 
             if occurances >= 2:
                 submol = Molecule(atoms=one_ring)
-                one_ring_thermodata = self.__addRingCorrectionThermoDataFromTree(None, self.groups['ring'], submol, two_ring_core)
+                if not isAromaticRing(one_ring):
 
+                    aromaticBonds = findAromaticBonds(submol)
+                    for aromaticBond in aromaticBonds:
+                        aromaticBond.order = 'S'
+                    
+                    one_ring_thermodata = self.__addRingCorrectionThermoDataFromTree(None, \
+                                                self.groups['ring'], submol, one_ring)
+
+                    # recover B bonds
+                    for aromaticBond in aromaticBonds:
+                        aromaticBond.order = 'B'
+                    
+                else:
+                    one_ring_thermodata = self.__addRingCorrectionThermoDataFromTree(None, \
+                                                    self.groups['ring'], submol, one_ring)
             for _ in range(occurances-1):
                 thermoData = removeThermoData(thermoData, one_ring_thermodata, True)
 
