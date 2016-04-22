@@ -283,6 +283,56 @@ def combineCycles(cycle1, cycle2):
     set1 = set(cycle1)
     set2 = set(cycle2)
     return list(set1.union(set2))
+
+def isAromaticRing(ring):
+    ring_size = len(ring)
+    if ring_size not in [5, 6]:
+        return False
+    submol = Molecule(atoms=ring)
+    for atom_i in ring:
+        bonds_i = submol.getBonds(atom_i)
+        for atom_i in bonds_i:
+            if atom_i in ring:
+                if not bonds_i[atom_i].isBenzene():
+                    return False
+    return True
+
+def findAromaticBonds(submol):
+    aromaticBonds = []
+    for atom in submol.atoms:
+        bonds = submol.getBonds(atom)
+        for atom_j in bonds:
+            if atom_j in submol.atoms:
+                bond = bonds[atom_j]
+                if bond.isBenzene():
+                    aromaticBonds.append(bond)
+    return set(aromaticBonds)
+
+def convertCycleToSubMolecule(cycle):
+    """
+    This function converts a list of atoms in a cycle to a `Molecule` object
+    """
+    from rmgpy.molecule.molecule import Molecule, Bond
+    
+    atoms0 = {}
+    bonds = []
+    for atom in cycle:
+        atoms0[atom] = atom.copy()
+
+    mol0 = Molecule(atoms=atoms0.values())
+
+    for atom in cycle:
+        for bondedAtom, bond in atom.edges.iteritems():
+            if bondedAtom in cycle:
+                # create a bond with the same bond order as in the original molecule,
+                # if it hasn't already been created
+                if not mol0.hasBond(atoms0[atom],atoms0[bondedAtom]):
+                    mol0.addBond(Bond(atoms0[atom],atoms0[bondedAtom],order=bond.order))
+            else:
+                pass
+    mol0.update()
+    
+    return mol0
 ################################################################################
 
 class ThermoDepository(Database):
