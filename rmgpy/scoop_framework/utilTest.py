@@ -80,6 +80,8 @@ class BroadcastTest(TestScoopCommon):
         # Only setup the scoop framework once, and not in every test method:
         super(self.__class__, self).setUp()
 
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "test currently only runs on linux")
     def test_generic(self):
         """
         Test that we can broadcast a simple string.
@@ -107,4 +109,3 @@ class GetTest(TestScoopCommon):
 
 if __name__ == '__main__' and os.environ.get('IS_ORIGIN', "1") == "1":
     unittest.main()
-

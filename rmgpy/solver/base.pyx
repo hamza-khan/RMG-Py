@@ -159,6 +159,13 @@ cdef class ReactionSystem(DASx):
         self.rtol_array = None
 
         self.termination = termination or []
+        
+        
+        # reaction filtration, unimolecularThreshold is a vector with length of number of core species
+        # bimolecularThreshold is a square matrix with length of number of core species
+        # A value of 1 in the matrix indicates the species is above the threshold to react or participate in those reactions
+        self.unimolecularThreshold = None
+        self.bimolecularThreshold = None
 
     def __reduce__(self):
         """
@@ -166,7 +173,7 @@ cdef class ReactionSystem(DASx):
         """
         return (self.__class__, (self.termination,))
 
-    cpdef initializeModel(self, list coreSpecies, list coreReactions, list edgeSpecies, list edgeReactions, list pdepNetworks=None, atol=1e-16, rtol=1e-8, sensitivity=False, sens_atol=1e-6, sens_rtol=1e-4):
+    cpdef initializeModel(self, list coreSpecies, list coreReactions, list edgeSpecies, list edgeReactions, list pdepNetworks=None, atol=1e-16, rtol=1e-8, sensitivity=False, sens_atol=1e-6, sens_rtol=1e-4, filterReactions=False):
         """
         Initialize a simulation of the reaction system using the provided
         kinetic model. You will probably want to create your own version of this
@@ -204,6 +211,8 @@ cdef class ReactionSystem(DASx):
         self.maxEdgeSpeciesRateRatios = numpy.zeros((self.numEdgeSpecies), numpy.float64)
         self.maxNetworkLeakRateRatios = numpy.zeros((self.numPdepNetworks), numpy.float64)
         self.sensitivityCoefficients = numpy.zeros((self.numCoreSpecies, self.numCoreReactions), numpy.float64)
+        self.unimolecularThreshold = numpy.zeros((self.numCoreSpecies), bool)
+        self.bimolecularThreshold = numpy.zeros((self.numCoreSpecies, self.numCoreSpecies), bool)
         
 
     def initialize_solver(self):
@@ -290,6 +299,18 @@ cdef class ReactionSystem(DASx):
         self.t0 = 0.0            
 
         self.y0 = numpy.zeros(self.neq, numpy.float64)
+    
+    def set_initial_reaction_thresholds(self):
+        
+        # Set unimolecular and bimolecular thresholds as true for any concentrations greater than 0
+        numCoreSpecies = len(self.coreSpeciesConcentrations)
+        for i in xrange(numCoreSpecies):
+            if self.coreSpeciesConcentrations[i] > 0:
+                self.unimolecularThreshold[i] = True
+        for i in xrange(numCoreSpecies):
+            for j in xrange(i, numCoreSpecies):
+                if self.coreSpeciesConcentrations[i] > 0 and self.coreSpeciesConcentrations[j] > 0:
+                    self.bimolecularThreshold[i,j] = True
 
     def set_initial_derivative(self):
         """
@@ -325,7 +346,8 @@ cdef class ReactionSystem(DASx):
     cpdef simulate(self, list coreSpecies, list coreReactions, list edgeSpecies, list edgeReactions,
         double toleranceKeepInEdge, double toleranceMoveToCore, double toleranceInterruptSimulation,
         list pdepNetworks=None, absoluteTolerance=1e-16, relativeTolerance=1e-8, sensitivity=False, 
-        sensitivityAbsoluteTolerance=1e-6, sensitivityRelativeTolerance=1e-4, sensWorksheet=None):
+        sensitivityAbsoluteTolerance=1e-6, sensitivityRelativeTolerance=1e-4, sensWorksheet=None,
+        filterReactions=False):
         """
         Simulate the reaction system with the provided reaction model,
         consisting of lists of core species, core reactions, edge species, and
@@ -348,8 +370,8 @@ cdef class ReactionSystem(DASx):
         cdef bint terminated
         cdef object maxSpecies, maxNetwork
         cdef int i, j, k
-        cdef numpy.ndarray[numpy.float64_t, ndim=1] forwardRateCoefficients
-        cdef double  prevTime, totalMoles, c, volume, RTP
+        cdef numpy.ndarray[numpy.float64_t, ndim=1] forwardRateCoefficients, coreSpeciesConcentrations
+        cdef double  prevTime, totalMoles, c, volume, RTP, unimolecularThresholdVal, bimolecularThresholdVal
         
         # cython declations for sensitivity analysis
         cdef numpy.ndarray[numpy.int_t, ndim=1] sensSpeciesIndices
@@ -367,7 +389,7 @@ cdef class ReactionSystem(DASx):
         for index, spec in enumerate(coreSpecies):
             speciesIndex[spec] = index
         
-        self.initializeModel(coreSpecies, coreReactions, edgeSpecies, edgeReactions, pdepNetworks, absoluteTolerance, relativeTolerance, sensitivity, sensitivityAbsoluteTolerance, sensitivityRelativeTolerance)
+        self.initializeModel(coreSpecies, coreReactions, edgeSpecies, edgeReactions, pdepNetworks, absoluteTolerance, relativeTolerance, sensitivity, sensitivityAbsoluteTolerance, sensitivityRelativeTolerance, filterReactions)
 
         invalidObject = None
         terminated = False
@@ -385,6 +407,8 @@ cdef class ReactionSystem(DASx):
         maxEdgeSpeciesRateRatios = self.maxEdgeSpeciesRateRatios
         maxNetworkLeakRateRatios = self.maxNetworkLeakRateRatios
         forwardRateCoefficients = self.kf
+        unimolecularThreshold = self.unimolecularThreshold
+        bimolecularThreshold = self.bimolecularThreshold
         
         # Copy the initial conditions to use in evaluating conversions
         y0 = self.y.copy()
@@ -471,6 +495,25 @@ cdef class ReactionSystem(DASx):
                 maxNetworkIndex = numpy.argmax(networkLeakRates)
                 maxNetwork = pdepNetworks[maxNetworkIndex]
                 maxNetworkRate = networkLeakRates[maxNetworkIndex]
+                
+            
+            if filterReactions:
+                # Calculate unimolecular and bimolecular thresholds for reaction
+                # Set the maximum unimolecular rate to be kB*T/h
+                unimolecularThresholdVal = toleranceMoveToCore * charRate / (2.08366122e10 * self.T.value_si)   
+                # Set the maximum bimolecular rate to be 1e7 m^3/mol*s, or 1e13 cm^3/mol*s
+                bimolecularThresholdVal = toleranceMoveToCore * charRate / 1e7 
+                coreSpeciesConcentrations = self.coreSpeciesConcentrations
+                for i in xrange(numCoreSpecies):
+                    if not unimolecularThreshold[i]:
+                        # Check if core species concentration has gone above threshold for unimolecular reaction
+                        if coreSpeciesConcentrations[i] > unimolecularThresholdVal:
+                            unimolecularThreshold[i] = True
+                for i in xrange(numCoreSpecies):
+                    for j in xrange(i, numCoreSpecies):
+                        if not bimolecularThreshold[i,j]:
+                            if coreSpeciesConcentrations[i]*coreSpeciesConcentrations[j] > bimolecularThresholdVal:
+                                bimolecularThreshold[i,j] = True
 
             # Interrupt simulation if that flux exceeds the characteristic rate times a tolerance
             if maxSpeciesRate > toleranceMoveToCore * charRate and not invalidObject:
@@ -523,28 +566,33 @@ cdef class ReactionSystem(DASx):
 
         if sensitivity:   
             for i in xrange(len(self.sensitiveSpecies)):
-                reactionsAboveThreshold = []
-                for j in xrange(numCoreReactions + numCoreSpecies):
+                with open(sensWorksheet[i], 'wb') as outfile:
+                    worksheet = csv.writer(outfile)
+                    reactionsAboveThreshold = []
+                    for j in xrange(numCoreReactions + numCoreSpecies):
+                        for k in xrange(len(time_array)):
+                            if abs(normSens_array[i][k][j]) > self.sensitivityThreshold:
+                                reactionsAboveThreshold.append(j)
+                                break
+                    species_name = getSpeciesIdentifier(self.sensitiveSpecies[i])
+                    headers = ['Time (s)']
+                    headers.extend(['dln[{0}]/dln[k{1}]: {2}'.format(species_name, j+1, coreReactions[j].toChemkin(kinetics=False)) if j < numCoreReactions 
+                                    else 'dln[{0}]/dG[{1}]'.format(species_name, getSpeciesIdentifier(coreSpecies[j-numCoreReactions])) for j in reactionsAboveThreshold])
+                    worksheet.writerow(headers)               
+                
                     for k in xrange(len(time_array)):
-                        if abs(normSens_array[i][k][j]) > self.sensitivityThreshold:
-                            reactionsAboveThreshold.append(j)
-                            break
-                species_name = getSpeciesIdentifier(self.sensitiveSpecies[i])
-                headers = ['Time (s)']
-                headers.extend(['dln[{0}]/dln[k{1}]: {2}'.format(species_name, j+1, coreReactions[j].toChemkin(kinetics=False)) if j < numCoreReactions 
-                                else 'dln[{0}]/dG[{1}]'.format(species_name, getSpeciesIdentifier(coreSpecies[j-numCoreReactions])) for j in reactionsAboveThreshold])
-                sensWorksheet[i].writerow(headers)               
-            
-                for k in xrange(len(time_array)):
-                    row = [time_array[k]]
-                    row.extend([normSens_array[i][k][j] for j in reactionsAboveThreshold])       
-                    sensWorksheet[i].writerow(row)  
+                        row = [time_array[k]]
+                        row.extend([normSens_array[i][k][j] for j in reactionsAboveThreshold])       
+                        worksheet.writerow(row)  
         
         self.maxCoreSpeciesRates = maxCoreSpeciesRates
         self.maxEdgeSpeciesRates = maxEdgeSpeciesRates
         self.maxNetworkLeakRates = maxNetworkLeakRates
         self.maxEdgeSpeciesRateRatios = maxEdgeSpeciesRateRatios
         self.maxNetworkLeakRateRatios = maxNetworkLeakRateRatios
+        
+        self.unimolecularThreshold = unimolecularThreshold
+        self.bimolecularThreshold = bimolecularThreshold
 
         # Return the invalid object (if the simulation was invalid) or None
         # (if the simulation was valid)

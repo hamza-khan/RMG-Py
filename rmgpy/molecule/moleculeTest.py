@@ -519,7 +519,29 @@ class TestMolecule(unittest.TestCase):
             else:
                 self.assertFalse(atom.label in labeled)
                 self.assertFalse(atom in labeled.values())
-
+        
+        multipleLabelMolecule = Molecule().fromAdjacencyList("""
+1 * C u0 p0 c0 {2,S} {3,S} {5,S} {6,S}
+2 * C u0 p0 c0 {1,S} {4,S} {7,S} {8,S}
+3 * C u0 p0 c0 {1,S} {9,S} {10,S} {11,S}
+4 * C u0 p0 c0 {2,S} {12,S} {13,S} {14,S}
+5 H u0 p0 c0 {1,S}
+6 H u0 p0 c0 {1,S}
+7 *1 H u0 p0 c0 {2,S}
+8 *1 H u0 p0 c0 {2,S}
+9 H u0 p0 c0 {3,S}
+10 *1 H u0 p0 c0 {3,S}
+11 H u0 p0 c0 {3,S}
+12 H u0 p0 c0 {4,S}
+13 H u0 p0 c0 {4,S}
+14 H u0 p0 c0 {4,S}
+""")
+        labeled = multipleLabelMolecule.getLabeledAtoms()
+        self.assertTrue('*' in labeled)
+        self.assertTrue('*1' in labeled)
+        self.assertEqual(len(labeled['*']),4)
+        self.assertEqual(len(labeled['*1']),3)
+        
     def testGetFormula(self):
         """
         Test the Molecule.getLabeledAtoms() method.
@@ -1395,11 +1417,142 @@ multiplicity 2
         except OverflowError:
             self.fail("updateConnectivityValues() raised OverflowError unexpectedly!")
 
+    def testLargeMolCreation(self):
+        """
+        Test molecules between C1 to C201 in 10 carbon intervals to make
+        sure that overflow errors are not generated.
+        """
+        for i in xrange(1,202,10):
+            smi = 'C'*i
+            try:
+                m = Molecule(SMILES=smi)
+            except OverflowError:
+                self.fail('Creation of C{} failed!'.format(i))
+
+    def testGetPolycyclicRings(self):
+        """
+        Test that polycyclic rings within a molecule are returned properly in the function
+        `Graph().getPolycyclicRings()`
+        """
+        # norbornane
+        m1 = Molecule(SMILES='C1CC2CCC1C2')
+        polyrings1 = m1.getPolycyclicRings()
+        self.assertEqual(len(polyrings1), 1)
+        ring = polyrings1[0]
+        self.assertEqual(len(ring),7)  # 7 carbons in cycle
         
+        # dibenzyl
+        m2 = Molecule(SMILES='C1=CC=C(C=C1)CCC1C=CC=CC=1')
+        polyrings2 = m2.getPolycyclicRings()
+        self.assertEqual(len(polyrings2), 0)
+        
+        # spiro[2.5]octane
+        m3 = Molecule(SMILES='C1CCC2(CC1)CC2')
+        polyrings3 = m3.getPolycyclicRings()
+        self.assertEqual(len(polyrings3), 1)
+        ring = polyrings3[0]
+        self.assertEqual(len(ring),8)
+        
+        # 1-phenyl norbornane
+        m4 = Molecule(SMILES='C1=CC=C(C=C1)C12CCC(CC1)C2')
+        polyrings4 = m4.getPolycyclicRings()
+        self.assertEqual(len(polyrings4), 1)
+        ring = polyrings4[0]
+        self.assertEqual(len(ring),7)
+        
+    def testGetMonocyclicRings(self):
+        """
+        Test that monocyclic rings within a molecule are returned properly in the function
+        `Graph().getMonocyclicRings()`
+        """
+        m1 = Molecule(SMILES='C(CCCC1CCCCC1)CCCC1CCCC1')
+        monorings = m1.getMonocyclicRings()
+        self.assertEqual(len(monorings),2)
+        
+        m2 = Molecule(SMILES='C(CCC1C2CCC1CC2)CC1CCC1')
+        monorings = m2.getMonocyclicRings()
+        self.assertEqual(len(monorings),1)
+        self.assertEqual(len(monorings[0]),4)
+        
+        m3 = Molecule(SMILES='CCCCC')
+        monorings = m3.getMonocyclicRings()
+        self.assertEqual(len(monorings),0)
+        
+    def testGetDisparateRings(self):
+        """
+        Test that monocyclic rings within a molecule are returned properly in the function
+        `Graph().getDisparateRings()`
+        """
+        
+        # norbornane
+        m1 = Molecule(SMILES='C1CC2CCC1C2')
+        monorings, polyrings = m1.getDisparateRings()
+        self.assertEqual(len(monorings), 0)
+        self.assertEqual(len(polyrings), 1)
+        self.assertEqual(len(polyrings[0]),7)  # 7 carbons in cycle
+        
+        m2 = Molecule(SMILES='C(CCC1C2CCC1CC2)CC1CCC1')
+        monorings, polyrings = m2.getDisparateRings()
+        self.assertEqual(len(monorings),1)
+        self.assertEqual(len(polyrings),1)
+        self.assertEqual(len(monorings[0]),4)
+        self.assertEqual(len(polyrings[0]),7)
+        
+        
+        m3 = Molecule(SMILES='C1CCC2(CC1)CC2CCCCC1CCC1')
+        monorings, polyrings = m3.getDisparateRings()
+        self.assertEqual(len(polyrings), 1)
+        self.assertEqual(len(monorings),1)
+        self.assertEqual(len(monorings[0]),4)
+        self.assertEqual(len(polyrings[0]),8)
+        
+        m4 = Molecule(SMILES='CCCC')
+        monorings, polyrings = m4.getDisparateRings()
+        self.assertEqual(len(monorings),0)
+        self.assertEqual(len(polyrings),0)
+        
+        m5 = Molecule(SMILES='C1=CC=C(CCCC2CC2)C(=C1)CCCCCC1CC1')
+        monorings, polyrings = m5.getDisparateRings()
+        self.assertEqual(len(monorings),3)
+        self.assertEqual(len(polyrings),0)
 
+    def testGetSmallestSetOfSmallestRings(self):
+        """
+        Test that SSSR within a molecule are returned properly in the function
+        `Graph().getSmallestSetOfSmallestRings()`
+        """
 
-
-
+        m1 = Molecule(SMILES='C12CCC1C3CC2CC3')
+        sssr1 = m1.getSmallestSetOfSmallestRings()
+        sssr1_sizes = sorted([len(ring) for ring in sssr1])
+        sssr1_sizes_expected = [4, 5, 5]
+        self.assertEqual(sssr1_sizes, sssr1_sizes_expected)
+        
+        m2 = Molecule(SMILES='C1(CC2)C(CC3)CC3C2C1')
+        sssr2 = m2.getSmallestSetOfSmallestRings()
+        sssr2_sizes = sorted([len(ring) for ring in sssr2])
+        sssr2_sizes_expected = [5, 5, 6]
+        self.assertEqual(sssr2_sizes, sssr2_sizes_expected)
+        
+        
+        m3 = Molecule(SMILES='C1(CC2)C2C(CCCC3)C3C1')
+        sssr3 = m3.getSmallestSetOfSmallestRings()
+        sssr3_sizes = sorted([len(ring) for ring in sssr3])
+        sssr3_sizes_expected = [4, 5, 6]
+        self.assertEqual(sssr3_sizes, sssr3_sizes_expected)
+        
+        m4 = Molecule(SMILES='C12=CC=CC=C1C3=C2C=CC=C3')
+        sssr4 = m4.getSmallestSetOfSmallestRings()
+        sssr4_sizes = sorted([len(ring) for ring in sssr4])
+        sssr4_sizes_expected = [4, 6, 6]
+        self.assertEqual(sssr4_sizes, sssr4_sizes_expected)
+        
+        m5 = Molecule(SMILES='C12=CC=CC=C1CC3=C(C=CC=C3)C2')
+        sssr5 = m5.getSmallestSetOfSmallestRings()
+        sssr5_sizes = sorted([len(ring) for ring in sssr5])
+        sssr5_sizes_expected = [6, 6, 6]
+        self.assertEqual(sssr5_sizes, sssr5_sizes_expected)
+        
 ################################################################################
 
 if __name__ == '__main__':

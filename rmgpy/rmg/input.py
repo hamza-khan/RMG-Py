@@ -96,6 +96,9 @@ def species(label, structure, reactive=True):
     spec, isNew = rmg.reactionModel.makeNewSpecies(structure, label=label, reactive=reactive)
     if not isNew:
         raise InputError("Species {0} is a duplicate of {1}. Species in input file must be unique".format(label,spec.label))
+    # Force RMG to add the species to edge first, prior to where it is added to the core, in case it is found in 
+    # any reaction libraries along the way
+    rmg.reactionModel.addSpeciesToEdge(spec)
     rmg.initialSpecies.append(spec)
     speciesDict[label] = spec
     
@@ -125,11 +128,23 @@ def simpleReactor(temperature,
     for value in initialMoleFractions.values():
         if value < 0:
             raise InputError('Initial mole fractions cannot be negative.')
+        
+    for spec in initialMoleFractions:
+            initialMoleFractions[spec] = float(initialMoleFractions[spec])
+
     totalInitialMoles = sum(initialMoleFractions.values())
     if totalInitialMoles != 1:
-        logging.warning('Initial mole fractions do not sum to one; renormalizing.')
+        logging.warning('Initial mole fractions do not sum to one; normalizing.')
+        logging.info('')
+        logging.info('Original composition:')
+        for spec, molfrac in initialMoleFractions.iteritems():
+            logging.info("{0} = {1}".format(spec,molfrac))
         for spec in initialMoleFractions:
             initialMoleFractions[spec] /= totalInitialMoles
+        logging.info('')
+        logging.info('Normalized mole fractions:')
+        for spec, molfrac in initialMoleFractions.iteritems():
+            logging.info("{0} = {1}".format(spec,molfrac))
 
     T = Quantity(temperature)
     P = Quantity(pressure)
@@ -158,7 +173,8 @@ def liquidReactor(temperature,
                   terminationConversion=None,
                   terminationTime=None,
                   sensitivity=None,
-                  sensitivityThreshold=1e-3):
+                  sensitivityThreshold=1e-3,
+                  constantSpecies=None):
     
     logging.debug('Found LiquidReactor reaction system')
     T = Quantity(temperature)
@@ -180,7 +196,17 @@ def liquidReactor(temperature,
     if sensitivity:
         for spec in sensitivity:
             sensitiveSpecies.append(speciesDict[spec])
-    system = LiquidReactor(T, initialConcentrations, termination, sensitiveSpecies, sensitivityThreshold)
+    
+    ##chatelak: check the constant species exist
+    if constantSpecies is not None:
+        logging.debug('  Generation with constant species:')
+        for constantSpecie in constantSpecies:
+            logging.debug("  {0}".format(constantSpecie))
+            if not speciesDict.has_key(constantSpecie):
+                raise InputError('Species {0} not found in the input file'.format(constantSpecie))
+             
+            
+    system = LiquidReactor(T, initialConcentrations, termination, sensitiveSpecies, sensitivityThreshold,constantSpecies)
     rmg.reactionSystems.append(system)
     
 def simulator(atol, rtol, sens_atol=1e-6, sens_rtol=1e-4):
@@ -195,7 +221,7 @@ def solvation(solvent):
         raise InputError("solvent should be a string like 'water'")
     rmg.solvent = solvent
 
-def model(toleranceMoveToCore=None, toleranceKeepInEdge=0.0, toleranceInterruptSimulation=1.0, maximumEdgeSpecies=None, minCoreSizeForPrune=50, minSpeciesExistIterationsForPrune=2):
+def model(toleranceMoveToCore=None, toleranceKeepInEdge=0.0, toleranceInterruptSimulation=1.0, maximumEdgeSpecies=1000000, minCoreSizeForPrune=50, minSpeciesExistIterationsForPrune=2, filterReactions=False):
     """
     How to generate the model. `toleranceMoveToCore` must be specified. Other parameters are optional and control the pruning.
     """
@@ -210,6 +236,7 @@ def model(toleranceMoveToCore=None, toleranceKeepInEdge=0.0, toleranceInterruptS
     rmg.maximumEdgeSpecies = maximumEdgeSpecies
     rmg.minCoreSizeForPrune = minCoreSizeForPrune
     rmg.minSpeciesExistIterationsForPrune = minSpeciesExistIterationsForPrune
+    rmg.filterReactions = filterReactions
 
 def quantumMechanics(
                     software,
@@ -521,6 +548,7 @@ def saveInputFile(path, rmg):
     f.write('    maximumEdgeSpecies = {0:d},\n'.format(rmg.maximumEdgeSpecies))
     f.write('    minCoreSizeForPrune = {0:d},\n'.format(rmg.minCoreSizeForPrune))
     f.write('    minSpeciesExistIterationsForPrune = {0:d},\n'.format(rmg.minSpeciesExistIterationsForPrune))
+    f.write('    filterReactions = {0:d},\n'.format(rmg.filterReactions))
     f.write(')\n\n')
 
     # Pressure Dependence
@@ -609,7 +637,7 @@ def getInput(name):
             else:
                 raise Exception
         except Exception, e:
-            logging.error("Did not find a way to obtain the broadcasted variable for {}.".format(name))
+            logging.debug("Did not find a way to obtain the variable for {}.".format(name))
             raise e
 
     raise Exception('Could not get variable with name: {}'.format(name))
